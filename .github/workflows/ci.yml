@@ -1,0 +1,84 @@
+
+name: CI - API de Pagamentos
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: payments_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d payments_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PORT: 3001
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ci_test_password
+      DB_NAME: payments_db
+      REDIS_URL: redis://127.0.0.1:6379
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Compilar TypeScript
+        run: npm run build
+
+      - name: Inicializar banco de dados
+        env:
+          PGPASSWORD: ci_test_password
+        run: |
+          psql -h 127.0.0.1 -U postgres -d payments_db -f init.sql
+
+      - name: Iniciar API
+        run: |
+          npm start > /tmp/payment-api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3001/health > /dev/null; then
+              echo "API disponível"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/payment-api.log
+          exit 1
+
+      - name: Executar testes automatizados
+        run: npm test
